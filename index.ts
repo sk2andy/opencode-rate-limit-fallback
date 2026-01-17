@@ -1,12 +1,12 @@
+// Only export the plugin function - OpenCode calls ALL exports as plugins
 export { createPlugin as RateLimitFallbackPlugin } from "./src/plugin"
-export {
-  loadConfig,
-  parseModel,
-  type RateLimitFallbackConfig,
-  type FallbackModel,
-  type FallbackModelObject,
+
+// Type exports are fine (stripped at runtime)
+export type {
+  RateLimitFallbackConfig,
+  FallbackModel,
+  FallbackModelObject,
 } from "./src/config"
-export { log, createLogger } from "./src/log"
 
 import { createPlugin } from "./src/plugin"
 export default createPlugin
