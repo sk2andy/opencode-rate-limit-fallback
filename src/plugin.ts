@@ -1,13 +1,6 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import { loadConfig, type RateLimitFallbackConfig } from "./config"
-
-const RATE_LIMIT_MESSAGES = [
-  "rate limit",
-  "usage limit",
-  "too many requests",
-  "quota exceeded",
-  "overloaded",
-]
+import { loadConfig, parseModel } from "./config"
+import { createLogger } from "./log"
 
 interface SessionState {
   fallbackActive: boolean
@@ -16,15 +9,28 @@ interface SessionState {
 
 const sessionStates = new Map<string, SessionState>()
 
-function isRateLimitMessage(message: string): boolean {
-  const lower = message.toLowerCase()
-  return RATE_LIMIT_MESSAGES.some(pattern => lower.includes(pattern))
+function createPatternMatcher(patterns: string[]) {
+  return (message: string): boolean => {
+    const lower = message.toLowerCase()
+    return patterns.some(pattern => lower.includes(pattern.toLowerCase()))
+  }
 }
 
 export async function createPlugin(context: PluginInput): Promise<Hooks> {
   const config = loadConfig()
+  const logger = createLogger(config.logging)
+  const isRateLimitMessage = createPatternMatcher(config.patterns)
+  const fallbackModel = parseModel(config.fallbackModel)
+
+  await logger.info("Plugin initialized", {
+    enabled: config.enabled,
+    fallbackModel: config.fallbackModel,
+    patterns: config.patterns,
+    cooldownMs: config.cooldownMs,
+  })
 
   if (!config.enabled) {
+    await logger.info("Plugin disabled via config")
     return {}
   }
 
@@ -47,8 +53,18 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
             const existingState = sessionStates.get(sessionID)
 
             if (existingState?.fallbackActive && Date.now() < existingState.cooldownEndTime) {
+              await logger.info("Skipping fallback, cooldown active", {
+                sessionID,
+                cooldownRemaining: existingState.cooldownEndTime - Date.now(),
+              })
               return
             }
+
+            await logger.info("Rate limit detected, switching to fallback", {
+              sessionID,
+              message: props.status.message,
+              fallbackModel: config.fallbackModel,
+            })
 
             sessionStates.set(sessionID, {
               fallbackActive: true,
@@ -65,11 +81,18 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
               await context.client.session.prompt({
                 path: { id: sessionID },
                 body: {
-                  model: config.fallbackModel,
+                  model: fallbackModel,
                   parts: [{ type: "text", text: "continue" }],
                 },
               })
-            } catch {}
+
+              await logger.info("Fallback prompt sent successfully", { sessionID })
+            } catch (err) {
+              await logger.error("Failed to send fallback prompt", {
+                sessionID,
+                error: err instanceof Error ? err.message : String(err),
+              })
+            }
           }
         }
 
@@ -78,6 +101,7 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
           const state = sessionStates.get(sessionID)
           if (state && state.fallbackActive && Date.now() >= state.cooldownEndTime) {
             state.fallbackActive = false
+            await logger.info("Cooldown expired, fallback reset", { sessionID })
           }
         }
       }
@@ -86,6 +110,7 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
         const props = event.properties as { info?: { id?: string } }
         if (props.info?.id) {
           sessionStates.delete(props.info.id)
+          await logger.info("Session cleaned up", { sessionID: props.info.id })
         }
       }
     },

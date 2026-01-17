@@ -2,26 +2,46 @@ import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+export interface FallbackModelObject {
+  providerID: string
+  modelID: string
+}
+
+export type FallbackModel = string | FallbackModelObject
+
 export interface RateLimitFallbackConfig {
   enabled: boolean
-  fallbackModel: {
-    providerID: string
-    modelID: string
-  }
+  fallbackModel: FallbackModel
   cooldownMs: number
+  patterns: string[]
+  logging: boolean
 }
+
+interface RawConfig {
+  enabled?: boolean
+  fallbackModel?: FallbackModel
+  cooldownMs?: number
+  patterns?: string[]
+  logging?: boolean
+}
+
+const DEFAULT_PATTERNS = [
+  "rate limit",
+  "usage limit",
+  "too many requests",
+  "quota exceeded",
+  "overloaded",
+]
 
 const DEFAULT_CONFIG: RateLimitFallbackConfig = {
   enabled: true,
-  fallbackModel: {
-    providerID: "anthropic",
-    modelID: "claude-opus-4-5",
-  },
+  fallbackModel: "anthropic/claude-opus-4-5",
   cooldownMs: 300000,
+  patterns: DEFAULT_PATTERNS,
+  logging: false,
 }
 
 const CONFIG_FILENAME = "rate-limit-fallback.json"
-
 const SEARCH_SUBDIRS = ["config", "plugins", "plugin"]
 
 function getConfigDir(): string {
@@ -51,6 +71,20 @@ function findConfigFile(): string | null {
   return null
 }
 
+export function parseModel(model: FallbackModel): FallbackModelObject {
+  if (typeof model === "object") {
+    return model
+  }
+  const slashIndex = model.indexOf("/")
+  if (slashIndex === -1) {
+    return { providerID: model, modelID: model }
+  }
+  return {
+    providerID: model.substring(0, slashIndex),
+    modelID: model.substring(slashIndex + 1),
+  }
+}
+
 export function loadConfig(): RateLimitFallbackConfig {
   const configPath = findConfigFile()
 
@@ -60,15 +94,14 @@ export function loadConfig(): RateLimitFallbackConfig {
 
   try {
     const content = readFileSync(configPath, "utf-8")
-    const userConfig = JSON.parse(content) as Partial<RateLimitFallbackConfig>
+    const userConfig = JSON.parse(content) as RawConfig
 
     return {
       enabled: userConfig.enabled ?? DEFAULT_CONFIG.enabled,
-      fallbackModel: {
-        providerID: userConfig.fallbackModel?.providerID ?? DEFAULT_CONFIG.fallbackModel.providerID,
-        modelID: userConfig.fallbackModel?.modelID ?? DEFAULT_CONFIG.fallbackModel.modelID,
-      },
+      fallbackModel: userConfig.fallbackModel ?? DEFAULT_CONFIG.fallbackModel,
       cooldownMs: userConfig.cooldownMs ?? DEFAULT_CONFIG.cooldownMs,
+      patterns: userConfig.patterns ?? DEFAULT_CONFIG.patterns,
+      logging: userConfig.logging ?? DEFAULT_CONFIG.logging,
     }
   } catch {
     return DEFAULT_CONFIG
