@@ -40,24 +40,58 @@ Create `rate-limit-fallback.json` in your OpenCode config directory:
 }
 ```
 
+**Multiple fallback models:**
+
+```json
+{
+  "enabled": true,
+  "fallbackModel": [
+    "anthropic/claude-opus-4-5",
+    "openai/gpt-4",
+    "anthropic/claude-sonnet-3-5"
+  ],
+  "cooldownMs": 300000,
+  "logging": true
+}
+```
+
 ### Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enabled` | boolean | `true` | Enable/disable the plugin |
-| `fallbackModel` | string \| object | `"anthropic/claude-opus-4-5"` | Fallback model (see formats below) |
+| `fallbackModel` | string \| object \| array | `"anthropic/claude-opus-4-5"` | Fallback model(s) (see formats below) |
 | `cooldownMs` | number | `300000` | Cooldown period in ms (default: 5 minutes) |
 | `patterns` | string[] | (see below) | Custom rate limit detection patterns |
 | `logging` | boolean | `false` | Enable file-based logging |
 
 ### Fallback Model Formats
 
-**String format (recommended):**
+**Single model (string format):**
 ```json
 {
   "fallbackModel": "anthropic/claude-opus-4-5"
 }
 ```
+
+**Multiple fallback models (array format):**
+```json
+{
+  "fallbackModel": [
+    "anthropic/claude-opus-4-5",
+    "openai/gpt-4",
+    "anthropic/claude-sonnet-3-5"
+  ]
+}
+```
+
+When using multiple fallback models, the plugin will rotate through them following this pattern:
+1. Main model fails → try first fallback
+2. First fallback fails → try main model again
+3. Main model fails → try first fallback again
+4. First fallback fails → try second fallback
+5. Second fallback fails → try third fallback
+6. And so on until one works or all fallbacks are exhausted
 
 ### Custom Patterns
 

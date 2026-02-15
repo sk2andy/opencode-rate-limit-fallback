@@ -8,10 +8,11 @@ export interface FallbackModelObject {
 }
 
 export type FallbackModel = string | FallbackModelObject
+export type FallbackModels = FallbackModel | FallbackModel[]
 
 export interface RateLimitFallbackConfig {
   enabled: boolean
-  fallbackModel: FallbackModel
+  fallbackModel: FallbackModels
   cooldownMs: number
   patterns: string[]
   logging: boolean
@@ -19,7 +20,7 @@ export interface RateLimitFallbackConfig {
 
 interface RawConfig {
   enabled?: boolean
-  fallbackModel?: FallbackModel
+  fallbackModel?: FallbackModels
   cooldownMs?: number
   patterns?: string[]
   logging?: boolean
