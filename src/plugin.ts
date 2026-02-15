@@ -6,7 +6,6 @@ interface SessionState {
   fallbackActive: boolean
   cooldownEndTime: number
   attemptCount: number
-  lastUsedModelIndex: number
 }
 
 interface MessageInfo {
@@ -60,7 +59,11 @@ function getNextFallbackModel(
   // attempt 5: fallback[2]
   // ... continue through all fallbacks
   
-  // Edge case: if attemptCount is 0 or less, default to fallback[0]
+  // Edge case: if no fallback models or attemptCount is invalid
+  if (fallbackModels.length === 0) {
+    return { model: null, shouldUseMain: true }
+  }
+  
   if (attemptCount <= 0) {
     return { model: fallbackModels[0], shouldUseMain: false }
   }
@@ -149,7 +152,6 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
                 fallbackActive: true,
                 cooldownEndTime: Date.now() + config.cooldownMs,
                 attemptCount: 1,
-                lastUsedModelIndex: -1,
               }
               sessionStates.set(sessionID, state)
             } else {
@@ -260,7 +262,6 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
             // Reset state when cooldown expires and session is idle
             state.fallbackActive = false
             state.attemptCount = 0
-            state.lastUsedModelIndex = -1
             await logger.info("Cooldown expired, fallback reset", { sessionID })
           }
         }
