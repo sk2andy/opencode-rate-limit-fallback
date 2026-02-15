@@ -59,13 +59,9 @@ function getNextFallbackModel(
   // attempt 5: fallback[2]
   // ... continue through all fallbacks
   
-  // Edge case: if no fallback models or attemptCount is invalid
+  // Edge case: if no fallback models configured, always use main
   if (fallbackModels.length === 0) {
     return { model: null, shouldUseMain: true }
-  }
-  
-  if (attemptCount <= 0) {
-    return { model: fallbackModels[0], shouldUseMain: false }
   }
   
   if (attemptCount === 1) {
@@ -84,6 +80,7 @@ function getNextFallbackModel(
   }
   
   // For attempts >= 4, cycle through remaining fallbacks
+  // Attempts 1-3 are handled above, so attempt 4 maps to fallbackIndex 1 (4 - 3 = 1)
   // attempt 4 -> fallback[1], attempt 5 -> fallback[2], etc.
   const fallbackIndex = attemptCount - 3
   if (fallbackIndex < fallbackModels.length) {
