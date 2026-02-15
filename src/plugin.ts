@@ -1,10 +1,11 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import { loadConfig, parseModel } from "./config"
+import { loadConfig, parseModel, type FallbackModel, type FallbackModelObject } from "./config"
 import { createLogger } from "./log"
 
 interface SessionState {
   fallbackActive: boolean
   cooldownEndTime: number
+  attemptCount: number
 }
 
 interface MessageInfo {
@@ -33,7 +34,62 @@ interface MessageWithParts {
   parts: MessagePart[]
 }
 
+interface PromptBody {
+  agent?: string
+  parts: Array<{ type: "text"; text: string } | { type: "file"; mime: string; filename?: string; url: string } | { type: "agent"; name: string }>
+  model?: FallbackModelObject
+}
+
 const sessionStates = new Map<string, SessionState>()
+
+function normalizeFallbackModels(config: FallbackModel | FallbackModel[]): FallbackModelObject[] {
+  const models = Array.isArray(config) ? config : [config]
+  return models.map(model => parseModel(model))
+}
+
+function getNextFallbackModel(
+  fallbackModels: FallbackModelObject[],
+  attemptCount: number
+): { model: FallbackModelObject | null; shouldUseMain: boolean } {
+  // Rotation pattern:
+  // attempt 1: fallback[0]
+  // attempt 2: main
+  // attempt 3: fallback[0]
+  // attempt 4: fallback[1]
+  // attempt 5: fallback[2]
+  // ... continue through all fallbacks
+  
+  // Edge case: if no fallback models configured, always use main
+  if (fallbackModels.length === 0) {
+    return { model: null, shouldUseMain: true }
+  }
+  
+  if (attemptCount === 1) {
+    // First fallback: try fallback[0]
+    return { model: fallbackModels[0], shouldUseMain: false }
+  }
+  
+  if (attemptCount === 2) {
+    // Second attempt: try main again
+    return { model: null, shouldUseMain: true }
+  }
+  
+  if (attemptCount === 3) {
+    // Third attempt: try fallback[0] again
+    return { model: fallbackModels[0], shouldUseMain: false }
+  }
+  
+  // For attempts >= 4, cycle through remaining fallbacks
+  // Attempts 1-3 are handled above, so attempt 4 maps to fallbackIndex 1 (4 - 3 = 1)
+  // attempt 4 -> fallback[1], attempt 5 -> fallback[2], etc.
+  const fallbackIndex = attemptCount - 3
+  if (fallbackIndex < fallbackModels.length) {
+    return { model: fallbackModels[fallbackIndex], shouldUseMain: false }
+  }
+  
+  // If we've exhausted all fallbacks, keep using the last one
+  return { model: fallbackModels[fallbackModels.length - 1], shouldUseMain: false }
+}
 
 function createPatternMatcher(patterns: string[]) {
   return (message: string): boolean => {
@@ -46,11 +102,12 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
   const config = loadConfig()
   const logger = createLogger(config.logging)
   const isRateLimitMessage = createPatternMatcher(config.patterns)
-  const fallbackModel = parseModel(config.fallbackModel)
+  const fallbackModels = normalizeFallbackModels(config.fallbackModel)
 
   await logger.info("Plugin initialized", {
     enabled: config.enabled,
     fallbackModel: config.fallbackModel,
+    fallbackModelsCount: fallbackModels.length,
     patterns: config.patterns,
     cooldownMs: config.cooldownMs,
   })
@@ -76,25 +133,42 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
         if (props.status.type === "retry" && props.status.message) {
           if (isRateLimitMessage(props.status.message)) {
             const sessionID = props.sessionID
-            const existingState = sessionStates.get(sessionID)
+            let state = sessionStates.get(sessionID)
 
-            if (existingState?.fallbackActive && Date.now() < existingState.cooldownEndTime) {
+            if (state?.fallbackActive && Date.now() < state.cooldownEndTime) {
               await logger.info("Skipping fallback, cooldown active", {
                 sessionID,
-                cooldownRemaining: existingState.cooldownEndTime - Date.now(),
+                cooldownRemaining: state.cooldownEndTime - Date.now(),
               })
               return
             }
 
+            // Initialize or increment attempt count
+            if (!state) {
+              state = {
+                fallbackActive: true,
+                cooldownEndTime: Date.now() + config.cooldownMs,
+                attemptCount: 1,
+              }
+              sessionStates.set(sessionID, state)
+            } else {
+              state.attemptCount += 1
+              state.fallbackActive = true
+              state.cooldownEndTime = Date.now() + config.cooldownMs
+            }
+
+            // Determine which model to use based on attempt count
+            const { model: nextModel, shouldUseMain } = getNextFallbackModel(
+              fallbackModels,
+              state.attemptCount
+            )
+
             await logger.info("Rate limit detected, switching to fallback", {
               sessionID,
               message: props.status.message,
-              fallbackModel: config.fallbackModel,
-            })
-
-            sessionStates.set(sessionID, {
-              fallbackActive: true,
-              cooldownEndTime: Date.now() + config.cooldownMs,
+              attemptCount: state.attemptCount,
+              shouldUseMain,
+              nextModel: shouldUseMain ? "main" : nextModel,
             })
 
             try {
@@ -147,16 +221,25 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
 
               await logger.info("Sending prompt with fallback model", {
                 sessionID,
-                model: fallbackModel,
+                model: shouldUseMain ? "main" : nextModel,
                 partsCount: originalParts.length,
+                attemptCount: state.attemptCount,
               })
+              
+              // Build the prompt body
+              const promptBody: PromptBody = {
+                agent: lastUserMessage.info.agent,
+                parts: originalParts,
+              }
+              
+              // Only specify model if not using main
+              if (!shouldUseMain && nextModel) {
+                promptBody.model = nextModel
+              }
+              
               await context.client.session.prompt({
                 path: { id: sessionID },
-                body: {
-                  model: fallbackModel,
-                  agent: lastUserMessage.info.agent,
-                  parts: originalParts,
-                },
+                body: promptBody,
               })
 
               await logger.info("Fallback prompt sent successfully", { sessionID })
@@ -173,7 +256,9 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
           const sessionID = props.sessionID
           const state = sessionStates.get(sessionID)
           if (state && state.fallbackActive && Date.now() >= state.cooldownEndTime) {
+            // Reset state when cooldown expires and session is idle
             state.fallbackActive = false
+            state.attemptCount = 0
             await logger.info("Cooldown expired, fallback reset", { sessionID })
           }
         }
