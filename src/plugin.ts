@@ -35,6 +35,12 @@ interface MessageWithParts {
   parts: MessagePart[]
 }
 
+interface PromptBody {
+  agent?: string
+  parts: Array<{ type: "text"; text: string } | { type: "file"; mime: string; filename?: string; url: string } | { type: "agent"; name: string }>
+  model?: FallbackModelObject
+}
+
 const sessionStates = new Map<string, SessionState>()
 
 function normalizeFallbackModels(config: FallbackModel | FallbackModel[]): FallbackModelObject[] {
@@ -53,6 +59,11 @@ function getNextFallbackModel(
   // attempt 4: fallback[1]
   // attempt 5: fallback[2]
   // ... continue through all fallbacks
+  
+  // Edge case: if attemptCount is 0 or less, default to fallback[0]
+  if (attemptCount <= 0) {
+    return { model: fallbackModels[0], shouldUseMain: false }
+  }
   
   if (attemptCount === 1) {
     // First fallback: try fallback[0]
@@ -217,7 +228,7 @@ export async function createPlugin(context: PluginInput): Promise<Hooks> {
               })
               
               // Build the prompt body
-              const promptBody: any = {
+              const promptBody: PromptBody = {
                 agent: lastUserMessage.info.agent,
                 parts: originalParts,
               }
